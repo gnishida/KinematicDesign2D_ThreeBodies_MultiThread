@@ -1,11 +1,12 @@
 ﻿#include "LinkageSynthesisWattI.h"
-#include <opencv2/opencv.hpp>
 #include "KinematicUtils.h"
 #include "Kinematics.h"
 #include "PinJoint.h"
 #include "SliderHinge.h"
 #include "BoundingBox.h"
 #include "LeastSquareSolver.h"
+#include <opencv2/opencv.hpp>
+#include <boost/thread.hpp>
 
 namespace kinematics {
 
@@ -30,21 +31,32 @@ namespace kinematics {
 
 		srand(0);
 
-		int cnt = 0;
-
 		// calculate the bounding boxe of the valid regions
 		BBox bbox = boundingBox(linkage_region_pts);
 
-		for (int iter = 0; iter < num_samples && cnt < num_samples; iter++) {
-			printf("\rsampling %d/%d", cnt, iter + 1);
+		// run multi-thread for sampling
+		const int NUM_THREADS = 8;
+		std::vector<boost::thread> threads(NUM_THREADS);
+		std::vector<std::vector<Solution>> sub_solutions(NUM_THREADS);
+		for (int i = 0; i < threads.size(); i++) {
+			threads[i] = boost::thread(&LinkageSynthesisWattI::calculateSolutionThread, this, boost::ref(poses), boost::ref(linkage_region_pts), boost::ref(bbox), boost::ref(linkage_avoidance_pts), num_samples / NUM_THREADS, boost::ref(moving_bodies), boost::ref(sub_solutions[i]));
+		}
+		for (int i = 0; i < threads.size(); i++) {
+			threads[i].join();
+		}
 
+		// merge the obtained solutions
+		for (int i = 0; i < sub_solutions.size(); i++) {
+			solutions.insert(solutions.end(), sub_solutions[i].begin(), sub_solutions[i].end());
+		}
+	}
+
+	void LinkageSynthesisWattI::calculateSolutionThread(const std::vector<std::vector<glm::dmat3x3>>& poses, const std::vector<glm::dvec2>& linkage_region_pts, const BBox& bbox, const std::vector<glm::dvec2>& linkage_avoidance_pts, int num_samples, const std::vector<Object25D>& moving_bodies, std::vector<Solution>& solutions) {
+		for (int iter = 0; iter < num_samples; iter++) {
 			// perturbe the poses a little
-			std::vector<std::vector<glm::dmat3x3>> perturbed_poses(poses.size());
-			for (int i = 0; i < poses.size(); i++) {
-				double position_error = 0.0;
-				double orientation_error = 0.0;
-				perturbed_poses[i] = perturbPoses(poses[i], sigmas, position_error, orientation_error);
-			}
+			double position_error = 0.0;
+			double orientation_error = 0.0;
+			std::vector<std::vector<glm::dmat3x3>> perturbed_poses = perturbPoses(poses, sigmas, position_error, orientation_error);
 
 			// sample joints within the linkage region
 			std::vector<glm::dvec2> points(10);
@@ -55,48 +67,8 @@ namespace kinematics {
 				}
 			}
 			
-			/*
-			points[0] = glm::dvec2(-1.61629, -14.5233);
-			points[1] = glm::dvec2(-8.19234, -18.1515);
-			points[2] = glm::dvec2(-23.6489, -54.2743);
-			points[3] = glm::dvec2(-1.53074, -11.2847);
-			points[4] = glm::dvec2(6.91939, -7.18384);
-			points[5] = glm::dvec2(3.0303, -6.65026);
-			points[6] = glm::dvec2(7.75299, -1.64727);
-			points[7] = glm::dvec2(4.90576, -0.997369);
-			points[8] = glm::dvec2(12.5208, -0.47217);
-			points[9] = glm::dvec2(12.9774, -2.02103);
-			*/
-
-			/*
-			// power shovel
-			points[0] = glm::dvec2(14.4526, 10.6841);
-			points[1] = glm::dvec2(5.72109, 13.0015);
-			points[2] = glm::dvec2(6.75419, 17.1667);
-			points[3] = glm::dvec2(0.660737, 20.2977);
-			points[4] = glm::dvec2(-18.289, 32.679);
-			points[5] = glm::dvec2(-19.5438, 35.2614);
-			points[6] = glm::dvec2(-19.133, 13.4302);
-			points[7] = glm::dvec2(-19.4497, 31.6456);
-			points[8] = glm::dvec2(-17.4255, 7.80664);
-			points[9] = glm::dvec2(-18.248, 23.0335);
-			*/
-
 			// DEBUG
 			if (iter == 0) {
-				/*
-				points[0] = glm::dvec2(11.2199, 15.0296);
-				points[1] = glm::dvec2(0.297775, 15.3521);
-				points[2] = glm::dvec2(8.80676, 15.8258);
-				points[3] = glm::dvec2(0.188685, 23.6491);
-				points[4] = glm::dvec2(-21.3205, 31.4622);
-				points[5] = glm::dvec2(-20.6909, 36.8504);
-				points[6] = glm::dvec2(-25.0378, 34.1323);
-				points[7] = glm::dvec2(-15.1771, 31.4538);
-				points[8] = glm::dvec2(-30.5742, 24.4257);
-				points[9] = glm::dvec2(-34.7407, 19.6037);
-				*/
-
 				points[0] = glm::dvec2(-3.76487, 25.9907);
 				points[1] = glm::dvec2(-4.06804, 17.4689);
 				points[2] = glm::dvec2(-21.797, 38.1363);
@@ -115,8 +87,6 @@ namespace kinematics {
 			if (iter > 0 && !checkHardConstraints(points, perturbed_poses, linkage_region_pts, linkage_avoidance_pts, moving_bodies)) continue;
 			
 			solutions.push_back(Solution(0, points, 0, 0, perturbed_poses));
-			cnt++;
-			break;
 		}
 
 		printf("\n");

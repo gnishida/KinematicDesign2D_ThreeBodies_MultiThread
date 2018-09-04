@@ -1,6 +1,7 @@
 #include "LinkageSynthesis.h"
 #include <QFile>
 #include <QTextStream>
+#include <boost/thread.hpp>
 
 namespace kinematics {
 
@@ -25,43 +26,48 @@ namespace kinematics {
 	/**
 	 * Perturbe the poses a little based on the sigma.
 	 */
-	std::vector<glm::dmat3x3> LinkageSynthesis::perturbPoses(const std::vector<glm::dmat3x3>& poses, std::vector<std::pair<double, double>>& sigmas, double& position_error, double& orientation_error) {
-		std::vector<glm::dmat3x3> perturbed_poses = poses;
+	std::vector<std::vector<glm::dmat3x3>> LinkageSynthesis::perturbPoses(const std::vector<std::vector<glm::dmat3x3>>& poses, std::vector<std::pair<double, double>>& sigmas, double& position_error, double& orientation_error) {
+		std::vector<std::vector<glm::dmat3x3>> perturbed_poses = poses;
 
 		position_error = 0.0;
 		orientation_error = 0.0;
 
 		for (int i = 0; i < perturbed_poses.size(); i++) {
-			double e1 = 0;
-			double e2 = 0;
-			double delta_theta = 0;
-			if (i == 0) {	// first pose
-				e1 = genNormal(0, sigmas[0].first);
-				e2 = genNormal(0, sigmas[0].first);
-				delta_theta = genNormal(0, sigmas[0].second);
-			}
-			else if (i == perturbed_poses.size() - 1) {	// last pose
-				e1 = genNormal(0, sigmas[2].first);
-				e2 = genNormal(0, sigmas[2].first);
-				delta_theta = genNormal(0, sigmas[2].second);
-			}
-			else {	// poses in the middle
-				e1 = genNormal(0, sigmas[1].first);
-				e2 = genNormal(0, sigmas[1].first);
-				delta_theta = genNormal(0, sigmas[1].second);
-			}
+			for (int j = 0; j < perturbed_poses[i].size(); j++) {
+				double e1 = 0;
+				double e2 = 0;
+				double delta_theta = 0;
+				if (j == 0) {	// first pose
+					e1 = genNormal(0, sigmas[0].first);
+					e2 = genNormal(0, sigmas[0].first);
+					delta_theta = genNormal(0, sigmas[0].second);
+				}
+				else if (j == perturbed_poses.size() - 1) {	// last pose
+					e1 = genNormal(0, sigmas[2].first);
+					e2 = genNormal(0, sigmas[2].first);
+					delta_theta = genNormal(0, sigmas[2].second);
+				}
+				else {	// poses in the middle
+					e1 = genNormal(0, sigmas[1].first);
+					e2 = genNormal(0, sigmas[1].first);
+					delta_theta = genNormal(0, sigmas[1].second);
+				}
 
-			perturbed_poses[i][2][0] += e1;
-			perturbed_poses[i][2][1] += e2;
-			position_error += std::sqrt(e1 * e1 + e2 * e2);
+				perturbed_poses[i][j][2][0] += e1;
+				perturbed_poses[i][j][2][1] += e2;
+				position_error += std::sqrt(e1 * e1 + e2 * e2);
 
-			double theta = atan2(poses[i][0][1], poses[i][0][0]) + delta_theta;
-			perturbed_poses[i][0][0] = cos(theta);
-			perturbed_poses[i][0][1] = sin(theta);
-			perturbed_poses[i][1][0] = -sin(theta);
-			perturbed_poses[i][1][1] = cos(theta);
-			orientation_error += abs(delta_theta);
+				double theta = atan2(poses[i][j][0][1], poses[i][j][0][0]) + delta_theta;
+				perturbed_poses[i][j][0][0] = cos(theta);
+				perturbed_poses[i][j][0][1] = sin(theta);
+				perturbed_poses[i][j][1][0] = -sin(theta);
+				perturbed_poses[i][j][1][1] = cos(theta);
+				orientation_error += abs(delta_theta);
+			}
 		}
+
+		position_error /= perturbed_poses.size();
+		orientation_error /= perturbed_poses.size();
 
 		return perturbed_poses;
 	}
@@ -153,37 +159,26 @@ namespace kinematics {
 
 		// particle filter
 		for (int iter = 0; iter < num_iterations; iter++) {
-			// perturb the particles and calculate its score
-			std::vector<Solution> new_particles = particles;
-			for (int i = 0; i < new_particles.size(); i++) {
-				// pertube the joints
-				for (int j = 0; j < new_particles[i].points.size(); j++) {
-					new_particles[i].points[j].x += genRand(-1, 1);
-					new_particles[i].points[j].y += genRand(-1, 1);
-				}
-
-				if (optimizeCandidate(new_particles[i].poses, linkage_region_pts, linkage_region_bbox, new_particles[i].points)) {
-					// check the hard constraints
-					if (checkHardConstraints(new_particles[i].points, new_particles[i].poses, linkage_region_pts, linkage_avoidance_pts, moving_bodies)) {
-						// calculate the score
-						new_particles[i].cost = calculateCost(new_particles[i], moving_bodies, dist_map, dist_map_bbox);
-					}
-					else {
-						// for the invalid point, make the cost infinity so that it will be discarded.
-						new_particles[i].cost = std::numeric_limits<double>::max();
-					}
-				}
-				else {
-					// for the invalid point, make the cost infinity so that it will be discarded.
-					new_particles[i].cost = std::numeric_limits<double>::max();
-				}
+			const int NUM_THREADS = 8;
+			std::vector<boost::thread> threads(NUM_THREADS);
+			std::vector<std::vector<Solution>> new_particles(NUM_THREADS);
+			for (int i = 0; i < threads.size(); i++) {
+				int offset1 = i * particles.size() / NUM_THREADS;
+				int offset2 = (i + 1) * particles.size() / NUM_THREADS;
+				new_particles[i] = std::vector<Solution>(particles.begin() + offset1, particles.begin() + offset2);
+				threads[i] = boost::thread(&LinkageSynthesis::particleFilterThread, this, boost::ref(new_particles[i]), boost::ref(linkage_region_pts), boost::ref(linkage_region_bbox), boost::ref(dist_map), boost::ref(dist_map_bbox), boost::ref(linkage_avoidance_pts), boost::ref(moving_bodies));
+			}
+			for (int i = 0; i < threads.size(); i++) {
+				threads[i].join();
 			}
 
 			// merge the particles
-			new_particles.insert(new_particles.end(), particles.begin(), particles.end());
+			for (int i = 0; i < threads.size(); i++) {
+				particles.insert(particles.end(), new_particles[i].begin(), new_particles[i].end());
+			}
 
 			// calculate the weights of particles
-			resample(new_particles, num_particles, particles, max_cost);
+			resample(particles, num_particles, particles, max_cost);
 
 			if (record_file) {
 				std::vector<double> values;
@@ -210,6 +205,33 @@ namespace kinematics {
 
 		// update solutions
 		solutions = particles;
+	}
+
+	void LinkageSynthesis::particleFilterThread(std::vector<Solution>& particles, const std::vector<glm::dvec2>& linkage_region_pts, const BBox& bbox, const cv::Mat& dist_map, const BBox& dist_map_bbox, const std::vector<glm::dvec2>& linkage_avoidance_pts, const std::vector<Object25D>& moving_bodies) {
+		// perturb the particles and calculate its score
+		for (int i = 0; i < particles.size(); i++) {
+			// pertube the joints
+			for (int j = 0; j < particles[i].points.size(); j++) {
+				particles[i].points[j].x += genRand(-1, 1);
+				particles[i].points[j].y += genRand(-1, 1);
+			}
+
+			if (optimizeCandidate(particles[i].poses, linkage_region_pts, bbox, particles[i].points)) {
+				// check the hard constraints
+				if (checkHardConstraints(particles[i].points, particles[i].poses, linkage_region_pts, linkage_avoidance_pts, moving_bodies)) {
+					// calculate the score
+					particles[i].cost = calculateCost(particles[i], moving_bodies, dist_map, dist_map_bbox);
+				}
+				else {
+					// for the invalid point, make the cost infinity so that it will be discarded.
+					particles[i].cost = std::numeric_limits<double>::max();
+				}
+			}
+			else {
+				// for the invalid point, make the cost infinity so that it will be discarded.
+				particles[i].cost = std::numeric_limits<double>::max();
+			}
+		}
 	}
 
 	/**
