@@ -67,26 +67,12 @@ namespace kinematics {
 				}
 			}
 			
-			// DEBUG
-			if (iter == 0) {
-				points[0] = glm::dvec2(-3.76487, 25.9907);
-				points[1] = glm::dvec2(-4.06804, 17.4689);
-				points[2] = glm::dvec2(-21.797, 38.1363);
-				points[3] = glm::dvec2(-0.900912, 22.4179);
-				points[4] = glm::dvec2(-20.1314, 30.8356);
-				points[5] = glm::dvec2(-22.5043, 33.0577);
-				points[6] = glm::dvec2(-26.1766, 29.1351);
-				points[7] = glm::dvec2(-42.8608, 18.9469);
-				points[8] = glm::dvec2(-47.912, 19.7987);
-				points[9] = glm::dvec2(-39.0381, 24.691);
-			}
-
-			if (iter > 0 && !optimizeCandidate(perturbed_poses, linkage_region_pts, bbox, points)) continue;
+			if (!optimizeCandidate(perturbed_poses, linkage_region_pts, bbox, points)) continue;
 
 			// check hard constraints
-			if (iter > 0 && !checkHardConstraints(points, perturbed_poses, linkage_region_pts, linkage_avoidance_pts, moving_bodies)) continue;
+			if (!checkHardConstraints(points, perturbed_poses, linkage_region_pts, linkage_avoidance_pts, moving_bodies)) continue;
 			
-			solutions.push_back(Solution(0, points, 0, 0, perturbed_poses));
+			solutions.push_back(Solution(0, points, position_error, orientation_error, perturbed_poses));
 		}
 
 		printf("\n");
