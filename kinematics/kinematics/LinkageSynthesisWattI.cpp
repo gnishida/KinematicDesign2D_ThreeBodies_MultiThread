@@ -98,7 +98,7 @@ namespace kinematics {
 	*/
 	bool LinkageSynthesisWattI::optimizeCandidate(const std::vector<std::vector<glm::dmat3x3>>& poses, const std::vector<glm::dvec2>& linkage_region_pts, const BBox& bbox, std::vector<glm::dvec2>& points) {
 		if (!optimizeLink(poses, linkage_region_pts, bbox, points)) return false;
-		if (check(poses, points) > 1.0) return false;
+		if (check(poses, points) > 0.1) return false;
 
 		// Check if all the joints are within the linkage region
 		for (int i = 0; i < points.size(); i++) {
